@@ -4,7 +4,7 @@ from fastapi.responses import JSONResponse
 import httpx
 import os
 from datetime import datetime
-import asyncio
+import uvicorn
 
 app = FastAPI(title="Luvuno Backend Proxy", description="Secure proxy for DeepSeek API")
 
@@ -14,8 +14,8 @@ app.add_middleware(
     allow_origins=[
         "http://localhost:8000",
         "http://localhost:5500",
-        "https://luvuno-quantum-chat.onrender.com",
-        "https://luvuno-frontend-1.onrender.com",
+        "https://luvuno-quantum-x.onrender.com",
+        "https://luvuno-chat-quantumx1.onrender.com",
         "https://*.onrender.com"
     ],
     allow_credentials=True,
@@ -23,29 +23,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Rate limiting (simple in-memory)
-rate_limit_store = {}
-RATE_LIMIT = 100  # requests per hour
-RATE_WINDOW = 3600  # 1 hour in seconds
-
-def check_rate_limit(client_ip: str):
-    now = datetime.now().timestamp()
-    if client_ip not in rate_limit_store:
-        rate_limit_store[client_ip] = []
-    
-    # Clean old entries
-    rate_limit_store[client_ip] = [t for t in rate_limit_store[client_ip] if now - t < RATE_WINDOW]
-    
-    if len(rate_limit_store[client_ip]) >= RATE_LIMIT:
-        return False
-    
-    rate_limit_store[client_ip].append(now)
-    return True
-
-# DeepSeek API key from environment variable
+# Get API key from environment variable
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 if not DEEPSEEK_API_KEY:
-    raise ValueError("DEEPSEEK_API_KEY environment variable not set")
+    print("⚠️ WARNING: DEEPSEEK_API_KEY environment variable not set!")
 
 @app.get("/")
 async def root():
@@ -53,23 +34,25 @@ async def root():
         "service": "Luvuno Backend Proxy",
         "status": "operational",
         "version": "1.0.0",
-        "endpoints": ["POST /api/chat", "GET /health"]
+        "endpoints": ["POST /api/chat", "GET /health"],
+        "api_key_configured": bool(DEEPSEEK_API_KEY)
     }
 
 @app.get("/health")
 async def health():
-    return {"status": "healthy", "timestamp": datetime.now().isoformat()}
+    return {
+        "status": "healthy",
+        "timestamp": datetime.now().isoformat(),
+        "api_key_configured": bool(DEEPSEEK_API_KEY)
+    }
 
 @app.post("/api/chat")
 async def chat(request: Request):
-    # Get client IP for rate limiting
-    client_ip = request.client.host if request.client else "unknown"
-    
-    # Rate limit check
-    if not check_rate_limit(client_ip):
+    # Check if API key is configured
+    if not DEEPSEEK_API_KEY:
         return JSONResponse(
-            status_code=429,
-            content={"error": "Rate limit exceeded. Max 100 requests per hour."}
+            status_code=500,
+            content={"error": "DEEPSEEK_API_KEY not configured on server"}
         )
     
     # Parse request body
@@ -77,15 +60,18 @@ async def chat(request: Request):
         body = await request.json()
         message = body.get("message")
         portal = body.get("portal", "quantum")
+        custom_system = body.get("system", "")
         
         if not message:
             return JSONResponse(status_code=400, content={"error": "Message is required"})
-        
     except Exception as e:
         return JSONResponse(status_code=400, content={"error": f"Invalid request: {str(e)}"})
     
-    # Build system prompt based on portal/skill
-    system_prompt = f"You are Luvuno, an AI assistant for Luvuno OS. Current portal: {portal}. Answer clearly, concisely, and helpfully. Use emojis where appropriate. Format with proper paragraphs."
+    # Build system prompt
+    system_prompt = f"You are Luvuno, an AI assistant for Luvuno OS. Current portal: {portal}. Answer clearly, concisely, and helpfully. Use emojis where appropriate. Format with proper paragraphs. Be warm and engaging."
+    
+    if custom_system == "quantumthink":
+        system_prompt += " Break down complex problems into clear steps. Use format: Step 1, Step 2, Step 3, Summary."
     
     # Call DeepSeek API
     try:
@@ -108,9 +94,10 @@ async def chat(request: Request):
             )
             
             if response.status_code != 200:
+                print(f"DeepSeek API error: {response.status_code} - {response.text}")
                 return JSONResponse(
                     status_code=response.status_code,
-                    content={"error": f"DeepSeek API error: {response.text}"}
+                    content={"error": f"DeepSeek API error: {response.text[:200]}"}
                 )
             
             data = response.json()
@@ -121,9 +108,9 @@ async def chat(request: Request):
     except httpx.TimeoutException:
         return JSONResponse(status_code=504, content={"error": "DeepSeek API timeout"})
     except Exception as e:
+        print(f"Internal error: {str(e)}")
         return JSONResponse(status_code=500, content={"error": f"Internal error: {str(e)}"})
 
 if __name__ == "__main__":
-    import uvicorn
     port = int(os.getenv("PORT", 8000))
     uvicorn.run(app, host="0.0.0.0", port=port)
