@@ -8,7 +8,9 @@ import uvicorn
 
 app = FastAPI(title="Luvuno Backend Proxy", description="Secure proxy for DeepSeek API")
 
-# CORS - Allow your frontend domains
+# ============================================================
+# CORS - Allow all Render frontend domains
+# ============================================================
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -16,6 +18,7 @@ app.add_middleware(
         "http://localhost:5500",
         "https://luvuno-quantum-x.onrender.com",
         "https://luvuno-chat-quantumx1.onrender.com",
+        "https://luvuno-quantum-chat-africa-os.onrender.com",
         "https://*.onrender.com"
     ],
     allow_credentials=True,
