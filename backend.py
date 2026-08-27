@@ -24,42 +24,58 @@ class ChatRequest(BaseModel):
 async def root():
     return {"status": "operational", "key_set": bool(OPENROUTER_KEY)}
 
+@app.get("/health")
+async def health():
+    return {"status": "healthy", "key_set": bool(OPENROUTER_KEY)}
+
 @app.post("/api/chat")
 async def chat(request: ChatRequest):
     if not OPENROUTER_KEY:
-        return {"error": "OpenRouter key not configured"}
+        return {"error": "OPENROUTER_API_KEY environment variable is missing on Render."}
 
     payload = {
         "model": "google/gemini-2.5-flash-1.5b",
         "messages": [
-            {"role": "system", "content": "You are a tough but fair creditor negotiating debt in South Africa. Keep responses under 3 sentences."},
+            {
+                "role": "system",
+                "content": "You are a tough but fair creditor negotiating debt in South Africa. Keep responses under 3 sentences."
+            },
             {"role": "user", "content": request.message}
         ],
         "temperature": 0.8,
-        "max_tokens": 300
+        "max_tokens": 150
     }
 
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        res = await client.post(
-            "https://openrouter.ai/api/v1/chat/completions",
-            headers={
-                "Authorization": f"Bearer {OPENROUTER_KEY}",
-                "Content-Type": "application/json",
-                "HTTP-Referer": "https://salary-plan-app.onrender.com",
-                "X-Title": "SalaryPlan"
-            },
-            json=payload
-        )
-        data = res.json()
-        
-        if res.status_code != 200:
-            return {"error": data.get("error", {}).get("message", "API Call Failed")}
+    try:
+        # Reduced timeout to 15 seconds to prevent Render hanging
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            res = await client.post(
+                "https://openrouter.ai/api/v1/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {OPENROUTER_KEY}",
+                    "Content-Type": "application/json",
+                    "HTTP-Referer": "https://salary-plan-app.onrender.com",
+                    "X-Title": "SalaryPlan"
+                },
+                json=payload
+            )
             
-        try:
-            reply = data["choices"][0]["message"]["content"]
+            data = res.json()
+            
+            if res.status_code != 200:
+                error_msg = data.get("error", {}).get("message", f"HTTP {res.status_code}")
+                return {"error": f"OpenRouter Error: {error_msg}"}
+                
+            reply = data.get("choices", [{}])[0].get("message", {}).get("content", "")
+            if not reply:
+                return {"error": "Empty response from AI model."}
+                
             return {"response": reply.strip()}
-        except Exception:
-            return {"error": "Failed to parse model response."}
+
+    except httpx.TimeoutException:
+        return {"error": "Request timed out while contacting OpenRouter."}
+    except Exception as e:
+        return {"error": f"Internal Server Error: {str(e)}"}
 
 if __name__ == "__main__":
     import uvicorn
