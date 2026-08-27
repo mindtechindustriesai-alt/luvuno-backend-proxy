@@ -34,7 +34,7 @@ async def chat(request: ChatRequest):
         return {"error": "OPENROUTER_API_KEY environment variable is missing on Render."}
 
     payload = {
-        "model": "google/gemini-2.5-flash-1.5b",
+        "model": "google/gemini-2.5-flash",
         "messages": [
             {
                 "role": "system",
@@ -47,7 +47,6 @@ async def chat(request: ChatRequest):
     }
 
     try:
-        # Reduced timeout to 15 seconds to prevent Render hanging
         async with httpx.AsyncClient(timeout=15.0) as client:
             res = await client.post(
                 "https://openrouter.ai/api/v1/chat/completions",
