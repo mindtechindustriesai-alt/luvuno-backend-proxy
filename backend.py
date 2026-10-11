@@ -1,7 +1,12 @@
 """
-LUVUNO BACKEND PROXY v6.0
+LUVUNO BACKEND PROXY v6.1
 DeepSeek + OpenRouter fallback · MQOS TERERAI quantum context injection
 Patent: SA 2026/05142 · CHSH S=2.76 (Aer: 2.8284)
+
+v6.1 changes:
+- Read 'S' field (uppercase) from MQOS cached endpoint (was 'chsh_s')
+- Verbose OpenRouter logging for diagnosis
+- Fallback loop trace
 """
 
 import os
@@ -57,7 +62,7 @@ LANGUAGE_PROMPTS = {
 app = FastAPI(
     title="Luvuno Backend Proxy",
     description="DeepSeek proxy with MQOS TERERAI quantum context injection",
-    version="6.0.0",
+    version="6.1.0",
 )
 
 app.add_middleware(
@@ -65,6 +70,7 @@ app.add_middleware(
     allow_origins=[
         "https://khensani-ai.onrender.com",
         "https://khensani-ai-homeschooling.onrender.com",
+        "https://mqos-tererai.onrender.com",
         "https://mindtech-quantum-tereraiv2-os.onrender.com",
         "https://salary-plan-app.onrender.com",
         "https://pelo.netlify.app",
@@ -84,6 +90,7 @@ app.add_middleware(
 class Message(BaseModel):
     role: str
     content: str
+
 
 class ChatRequest(BaseModel):
     message: str
@@ -112,19 +119,32 @@ def verify_auth(x_luvuno_key: str = Header(default="")):
 async def fetch_chsh_context() -> Optional[Dict]:
     """Fetch live CHSH value from MQOS TERERAI for system prompt enrichment."""
     if not MQOS_URL:
+        print("[MQOS] MQOS_URL not configured — skipping")
         return None
+    url = f"{MQOS_URL}/api/v1/verify/chsh/cached"
     try:
-        async with httpx.AsyncClient(timeout=5.0) as client:
+        print(f"[MQOS] Fetching {url}")
+        async with httpx.AsyncClient(timeout=30.0) as client:
             r = await client.get(
-                f"{MQOS_URL}/api/v1/verify/chsh/cached",
+                url,
                 headers={"X-MQOS-Key": MQOS_KEY} if MQOS_KEY else {},
             )
+        print(f"[MQOS] HTTP {r.status_code}")
         if r.status_code == 200:
-            return r.json()
-        print(f"[MQOS] non-200 status: {r.status_code}")
+            data = r.json()
+            print(f"[MQOS] S={data.get('S')} backend={data.get('backend')}")
+            return data
+        print(f"[MQOS] non-200 body: {r.text[:200]}")
     except Exception as e:
-        print(f"[MQOS] fetch failed: {e}")
+        print(f"[MQOS] fetch exception: {type(e).__name__}: {e}")
     return None
+
+
+def get_chsh_value(chsh_context: Optional[Dict]) -> Optional[float]:
+    """Read CHSH value from MQOS response — handles both 'S' and 'chsh_s' field names."""
+    if not chsh_context:
+        return None
+    return chsh_context.get("S") or chsh_context.get("chsh_s")
 
 
 # ============================================================
@@ -157,9 +177,10 @@ def build_system_prompt(
 """
 
     if chsh_context:
+        chsh_value = get_chsh_value(chsh_context)
         prompt += f"""
 ## QUANTUM VERIFICATION CONTEXT (LIVE)
-- CHSH S = {chsh_context.get('chsh_s')}
+- CHSH S = {chsh_value}
 - Backend: {chsh_context.get('backend')}
 - Correlation: {chsh_context.get('correlation')}%
 - Hardware verified: {chsh_context.get('hardware_verified', False)}
@@ -211,6 +232,7 @@ def build_messages(req: ChatRequest, chsh_context: Optional[Dict]) -> List[Dict]
 
 async def call_deepseek(messages: List[Dict], max_tokens: int, reasoning: bool = False) -> Optional[Dict]:
     if not DEEPSEEK_ENABLED or not DEEPSEEK_API_KEY:
+        print("[DeepSeek] Disabled or no API key — skipping")
         return None
     try:
         model = DEEPSEEK_REASONER if reasoning else DEEPSEEK_MODEL
@@ -230,8 +252,9 @@ async def call_deepseek(messages: List[Dict], max_tokens: int, reasoning: bool =
                 },
                 json=payload,
             )
+        print(f"[DeepSeek] HTTP {r.status_code}")
         if r.status_code != 200:
-            print(f"[DeepSeek] {r.status_code}: {r.text[:200]}")
+            print(f"[DeepSeek] body: {r.text[:200]}")
             return None
         data = r.json()
         return {
@@ -240,7 +263,7 @@ async def call_deepseek(messages: List[Dict], max_tokens: int, reasoning: bool =
             "tokens": data.get("usage", {}).get("total_tokens", 0),
         }
     except Exception as e:
-        print(f"[DeepSeek] exception: {e}")
+        print(f"[DeepSeek] exception: {type(e).__name__}: {e}")
         return None
 
 
@@ -249,8 +272,11 @@ async def call_deepseek(messages: List[Dict], max_tokens: int, reasoning: bool =
 # ============================================================
 
 async def call_openrouter(messages: List[Dict], max_tokens: int, model_name: str) -> Optional[Dict]:
+    print(f"[OpenRouter] Attempting: {model_name}")
     if not OPENROUTER_KEY:
+        print("[OpenRouter] No API key configured — skipping")
         return None
+    print(f"[OpenRouter] Key prefix: {OPENROUTER_KEY[:12]}, length: {len(OPENROUTER_KEY)}")
     try:
         payload = {
             "model": model_name,
@@ -269,7 +295,9 @@ async def call_openrouter(messages: List[Dict], max_tokens: int, model_name: str
                 },
                 json=payload,
             )
+        print(f"[OpenRouter] {model_name} → HTTP {r.status_code}")
         if r.status_code != 200:
+            print(f"[OpenRouter] {model_name} body: {r.text[:300]}")
             return None
         data = r.json()
         return {
@@ -278,7 +306,7 @@ async def call_openrouter(messages: List[Dict], max_tokens: int, model_name: str
             "tokens": data.get("usage", {}).get("total_tokens", 0),
         }
     except Exception as e:
-        print(f"[OpenRouter] exception: {e}")
+        print(f"[OpenRouter] {model_name} exception: {type(e).__name__}: {e}")
         return None
 
 
@@ -289,16 +317,17 @@ async def call_openrouter(messages: List[Dict], max_tokens: int, model_name: str
 @app.get("/")
 async def root():
     chsh = await fetch_chsh_context()
+    chsh_value = get_chsh_value(chsh)
     return {
         "service": "Luvuno Backend Proxy",
-        "version": "6.0.0",
+        "version": "6.1.0",
         "status": "operational",
         "primary_backend": PRIMARY_BACKEND,
         "deepseek_configured": bool(DEEPSEEK_API_KEY),
         "openrouter_configured": bool(OPENROUTER_KEY),
         "mqos_url_configured": bool(MQOS_URL),
         "luvuno_auth_enabled": bool(LUVUNO_SHARED_SECRET),
-        "quantum_state": f"CHSH S={chsh.get('chsh_s')}" if chsh else "MQOS unavailable",
+        "quantum_state": f"CHSH S={chsh_value}" if chsh_value is not None else "MQOS unavailable",
         "quantum_backend": chsh.get("backend") if chsh else None,
         "patent": "SA 2026/05142",
     }
@@ -321,9 +350,12 @@ async def chat(req: ChatRequest, x_luvuno_key: str = Header(default="")):
     verify_auth(x_luvuno_key)
 
     t_start = time.perf_counter()
+    print(f"--- [Chat] message='{req.message[:60]}' portal={req.portal} lang={req.language} ---")
 
     # Fetch live quantum context from MQOS TERERAI
     chsh_context = await fetch_chsh_context()
+    chsh_value = get_chsh_value(chsh_context)
+    print(f"[Chat] chsh_value={chsh_value}")
 
     # Build messages with quantum context injected
     messages = build_messages(req, chsh_context)
@@ -332,43 +364,46 @@ async def chat(req: ChatRequest, x_luvuno_key: str = Header(default="")):
     max_tokens = token_map.get(req.response_style, 1000)
 
     # STRATEGY 1 — DeepSeek
-    if DEEPSEEK_ENABLED or DEEPSEEK_API_KEY:
-        t0 = time.perf_counter()
-        result = await call_deepseek(messages, max_tokens, reasoning=req.quantum_reasoning)
-        t1 = time.perf_counter()
-        if result:
-            t_end = time.perf_counter()
-            return {
-                "response": result["response"],
-                "model_used": result["model"],
-                "backend": "deepseek",
-                "language": req.language,
-                "quantum_verified": True,
-                "chsh_score": chsh_context.get("chsh_s") if chsh_context else 2.8284,
-                "correlation": chsh_context.get("correlation") if chsh_context else 92.39,
-                "chsh_context": chsh_context,
-                "patent_number": "2026/05142",
-                "stopwatch": {
-                    "total_ms": round((t_end - t_start) * 1000, 2),
-                    "api_ms": round((t1 - t0) * 1000, 2),
-                    "tokens_used": result["tokens"],
-                },
-            }
+    print("[Chat] Strategy 1: DeepSeek")
+    t0 = time.perf_counter()
+    result = await call_deepseek(messages, max_tokens, reasoning=req.quantum_reasoning)
+    t1 = time.perf_counter()
+    if result:
+        t_end = time.perf_counter()
+        print(f"[Chat] DeepSeek success in {round((t_end - t_start) * 1000, 2)}ms")
+        return {
+            "response": result["response"],
+            "model_used": result["model"],
+            "backend": "deepseek",
+            "language": req.language,
+            "quantum_verified": True,
+            "chsh_score": chsh_value if chsh_value is not None else 2.8284,
+            "correlation": chsh_context.get("correlation") if chsh_context else 92.39,
+            "chsh_context": chsh_context,
+            "patent_number": "2026/05142",
+            "stopwatch": {
+                "total_ms": round((t_end - t_start) * 1000, 2),
+                "api_ms": round((t1 - t0) * 1000, 2),
+                "tokens_used": result["tokens"],
+            },
+        }
 
     # STRATEGY 2 — OpenRouter fallback
+    print("[Chat] Strategy 2: OpenRouter fallbacks")
     for model_name in [FALLBACK_1, FALLBACK_2]:
         t0 = time.perf_counter()
         result = await call_openrouter(messages, max_tokens, model_name)
         t1 = time.perf_counter()
         if result:
             t_end = time.perf_counter()
+            print(f"[Chat] OpenRouter success: {model_name} in {round((t_end - t_start) * 1000, 2)}ms")
             return {
                 "response": result["response"],
                 "model_used": result["model"],
                 "backend": "openrouter",
                 "language": req.language,
                 "quantum_verified": True,
-                "chsh_score": chsh_context.get("chsh_s") if chsh_context else 2.8284,
+                "chsh_score": chsh_value if chsh_value is not None else 2.8284,
                 "correlation": chsh_context.get("correlation") if chsh_context else 92.39,
                 "chsh_context": chsh_context,
                 "patent_number": "2026/05142",
@@ -381,6 +416,7 @@ async def chat(req: ChatRequest, x_luvuno_key: str = Header(default="")):
 
     # STRATEGY 3 — all failed
     t_end = time.perf_counter()
+    print(f"[Chat] ALL BACKENDS FAILED in {round((t_end - t_start) * 1000, 2)}ms")
     return JSONResponse(
         status_code=503,
         content={
