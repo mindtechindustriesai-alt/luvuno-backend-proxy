@@ -1,12 +1,13 @@
 """
-LUVUNO BACKEND PROXY v6.1
+LUVUNO BACKEND PROXY v6.2
 DeepSeek + OpenRouter fallback · MQOS TERERAI quantum context injection
 Patent: SA 2026/05142 · CHSH S=2.76 (Aer: 2.8284)
 
-v6.1 changes:
-- Read 'S' field (uppercase) from MQOS cached endpoint (was 'chsh_s')
-- Verbose OpenRouter logging for diagnosis
-- Fallback loop trace
+v6.2 changes:
+- Swap deprecated OpenRouter free models for current ones
+- FALLBACK_1: deepseek/deepseek-chat-v3.1:free
+- FALLBACK_2: meta-llama/llama-3.1-8b-instruct:free
+- Verbose OpenRouter logging retained
 """
 
 import os
@@ -33,8 +34,8 @@ DEEPSEEK_REASONER = "deepseek-reasoner"
 
 OPENROUTER_KEY = os.environ.get("OPENROUTER_API_KEY", "")
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
-FALLBACK_1 = "google/gemini-2.0-flash-exp:free"
-FALLBACK_2 = "meta-llama/llama-3.3-70b-instruct:free"
+FALLBACK_1 = "deepseek/deepseek-chat-v3.1:free"
+FALLBACK_2 = "meta-llama/llama-3.1-8b-instruct:free"
 
 PRIMARY_BACKEND = os.environ.get("LUVUNO_PRIMARY_BACKEND", "deepseek")
 
@@ -62,7 +63,7 @@ LANGUAGE_PROMPTS = {
 app = FastAPI(
     title="Luvuno Backend Proxy",
     description="DeepSeek proxy with MQOS TERERAI quantum context injection",
-    version="6.1.0",
+    version="6.2.0",
 )
 
 app.add_middleware(
@@ -320,7 +321,7 @@ async def root():
     chsh_value = get_chsh_value(chsh)
     return {
         "service": "Luvuno Backend Proxy",
-        "version": "6.1.0",
+        "version": "6.2.0",
         "status": "operational",
         "primary_backend": PRIMARY_BACKEND,
         "deepseek_configured": bool(DEEPSEEK_API_KEY),
