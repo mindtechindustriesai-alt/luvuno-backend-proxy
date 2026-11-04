@@ -5,7 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Optional
 
-app = FastAPI(title="MindTech Gateway", version="2.0")
+app = FastAPI(title="MindTech Gateway", version="2.1")
 
 app.add_middleware(
     CORSMiddleware,
@@ -32,6 +32,7 @@ async def chat_gateway(req: ChatRequest):
     live_context = ""
     sources = []
 
+    # 1. Fetch Live Web Intel
     if TAVILY_API_KEY:
         try:
             async with httpx.AsyncClient() as client:
@@ -44,7 +45,7 @@ async def chat_gateway(req: ChatRequest):
                         "include_answer": True,
                         "max_results": 3
                     },
-                    timeout=10.0
+                    timeout=15.0
                 )
                 if tavily_res.status_code == 200:
                     data = tavily_res.json()
@@ -62,14 +63,13 @@ async def chat_gateway(req: ChatRequest):
     if not GEMINI_API_KEY:
         return {"success": False, "reply": "Gemini API key is missing."}
 
-    # The Correct Endpoint for Interactions API
     url = "https://generativelanguage.googleapis.com/v1beta/interactions"
     headers = {
         "x-goog-api-key": GEMINI_API_KEY,
         "Content-Type": "application/json"
     }
 
-    # Try 3.8, fallback to 3.5-flash
+    # Try 3.8 first, then 3.5 as fallback
     models_to_try = ["gemini-3.8-flash", "gemini-3.5-flash"]
     reply = "I am currently offline. All models failed."
 
@@ -77,12 +77,13 @@ async def chat_gateway(req: ChatRequest):
         payload = {
             "model": model_name,
             "input": final_user_content,
-            "system_instruction": req.system_prompt  # Must be a string
+            "system_instruction": req.system_prompt
         }
 
         try:
             async with httpx.AsyncClient() as client:
-                ai_res = await client.post(url, headers=headers, json=payload, timeout=30.0)
+                # INCREASED TIMEOUT TO 60 SECONDS
+                ai_res = await client.post(url, headers=headers, json=payload, timeout=60.0)
                 
                 if ai_res.status_code == 200:
                     ai_data = ai_res.json()
@@ -104,15 +105,19 @@ async def chat_gateway(req: ChatRequest):
                         for s in set(sources):
                             reply += f"- {s}\n"
                     
-                    break  # Success!
+                    break  # Success! Break out of the loop.
                     
                 elif ai_res.status_code == 503:
-                    print(f"{model_name} overloaded. Trying next...")
-                    continue
+                    print(f"{model_name} overloaded (503). Trying next model...")
+                    continue  # Try the next model
                 else:
                     reply = f"Gemini Error ({model_name}): {ai_res.status_code} - {ai_res.text}"
-                    break
+                    break  # Real error, stop trying
                     
+        except httpx.ReadTimeout:
+            print(f"{model_name} timed out after 60s.")
+            reply = f"The AI ({model_name}) took too long to respond. Please try again."
+            continue # Try the next model on timeout
         except Exception as e:
             reply = f"Connection Error: {str(e)}"
             break
