@@ -5,7 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Optional
 
-app = FastAPI(title="MindTech Intelligence Gateway", version="1.7")
+app = FastAPI(title="MindTech Intelligence Gateway", version="1.8")
 
 app.add_middleware(
     CORSMiddleware,
@@ -32,7 +32,6 @@ async def chat_gateway(req: ChatRequest):
     live_context = ""
     sources = []
 
-    # 1. Fetch Live Web Intel securely via Tavily
     if TAVILY_API_KEY:
         try:
             async with httpx.AsyncClient() as client:
@@ -56,14 +55,12 @@ async def chat_gateway(req: ChatRequest):
         except Exception as e:
             print(f"Tavily error: {e}")
 
-    # 2. Build the input string
     final_user_content = req.prompt
     if live_context:
         final_user_content = f"{live_context}\n\nQuestion: {req.prompt}\n(Use the CURRENT INFO above to answer accurately)."
 
-    # 3. Call Gemini with Fallback
     if not GEMINI_API_KEY:
-        return {"success": False, "reply": "Gemini API key is missing in Render Environment."}
+        return {"success": False, "reply": "Gemini API key is missing."}
 
     url = "https://generativelanguage.googleapis.com/v1beta/interactions"
     headers = {
@@ -71,8 +68,8 @@ async def chat_gateway(req: ChatRequest):
         "Content-Type": "application/json"
     }
 
-    # Try 3.8 first, then fallback to 2.0 if overloaded
-    models_to_try = ["gemini-3.8-flash", "gemini-2.0-flash"]
+    # Fallback list: Try 3.8, then 1.5 (which is stable for older accounts)
+    models_to_try = ["gemini-3.8-flash", "gemini-1.5-flash"]
     reply = "I am currently offline. All Gemini models failed."
 
     for model_name in models_to_try:
@@ -107,14 +104,14 @@ async def chat_gateway(req: ChatRequest):
                         for s in set(sources):
                             reply += f"- {s}\n"
                     
-                    break # Success! Break out of the fallback loop.
+                    break # Success! Stop trying models.
                     
                 elif ai_res.status_code == 503:
-                    print(f"{model_name} is overloaded. Trying next model...")
-                    continue # Try the next model in the list
+                    print(f"{model_name} overloaded. Trying next...")
+                    continue # Try the next model
                 else:
                     reply = f"Gemini Error ({model_name}): {ai_res.status_code} - {ai_res.text}"
-                    break # Non-503 error, stop trying
+                    break # Real error (like 400), stop trying
                     
         except Exception as e:
             reply = f"Connection Error: {str(e)}"
