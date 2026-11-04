@@ -5,7 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Optional
 
-app = FastAPI(title="MindTech Intelligence Gateway", version="1.6")
+app = FastAPI(title="MindTech Intelligence Gateway", version="1.7")
 
 app.add_middleware(
     CORSMiddleware,
@@ -61,55 +61,64 @@ async def chat_gateway(req: ChatRequest):
     if live_context:
         final_user_content = f"{live_context}\n\nQuestion: {req.prompt}\n(Use the CURRENT INFO above to answer accurately)."
 
-    # 3. Call Gemini 3.8 Flash using the new Interactions API
+    # 3. Call Gemini with Fallback
     if not GEMINI_API_KEY:
         return {"success": False, "reply": "Gemini API key is missing in Render Environment."}
 
-    try:
-        url = "https://generativelanguage.googleapis.com/v1beta/interactions"
-        
-        headers = {
-            "x-goog-api-key": GEMINI_API_KEY,
-            "Content-Type": "application/json"
-        }
-        
-        # FIXED: system_instruction must be a plain string, not a dict
+    url = "https://generativelanguage.googleapis.com/v1beta/interactions"
+    headers = {
+        "x-goog-api-key": GEMINI_API_KEY,
+        "Content-Type": "application/json"
+    }
+
+    # Try 3.8 first, then fallback to 2.0 if overloaded
+    models_to_try = ["gemini-3.8-flash", "gemini-2.0-flash"]
+    reply = "I am currently offline. All Gemini models failed."
+
+    for model_name in models_to_try:
         payload = {
-            "model": "gemini-3.8-flash",
+            "model": model_name,
             "input": final_user_content,
             "system_instruction": req.system_prompt
         }
 
-        async with httpx.AsyncClient() as client:
-            ai_res = await client.post(url, headers=headers, json=payload, timeout=30.0)
-            
-            if ai_res.status_code == 200:
-                ai_data = ai_res.json()
-                reply = ""
+        try:
+            async with httpx.AsyncClient() as client:
+                ai_res = await client.post(url, headers=headers, json=payload, timeout=30.0)
                 
-                # The Interactions API returns output_text directly
-                if "output_text" in ai_data:
-                    reply = ai_data["output_text"]
-                # Fallback: Parse the steps array
-                elif "steps" in ai_data:
-                    for step in ai_data["steps"]:
-                        if step.get("type") == "model_output":
-                            for content in step.get("content", []):
-                                if content.get("type") == "text":
-                                    reply += content.get("text", "")
-                
-                if not reply:
-                    reply = f"No text output found in Gemini response. Raw: {str(ai_data)[:200]}"
-                
-                if sources:
-                    reply += "\n\n**Sources:**\n"
-                    for s in set(sources):
-                        reply += f"- {s}\n"
-            else:
-                reply = f"Gemini Error: {ai_res.status_code} - {ai_res.text}"
-                
-    except Exception as e:
-        reply = f"I am currently offline. Error: {str(e)}"
+                if ai_res.status_code == 200:
+                    ai_data = ai_res.json()
+                    reply = ""
+                    
+                    if "output_text" in ai_data:
+                        reply = ai_data["output_text"]
+                    elif "steps" in ai_data:
+                        for step in ai_data["steps"]:
+                            if step.get("type") == "model_output":
+                                for content in step.get("content", []):
+                                    if content.get("type") == "text":
+                                        reply += content.get("text", "")
+                    
+                    if not reply:
+                        reply = f"No text output found. Raw: {str(ai_data)[:200]}"
+                    
+                    if sources:
+                        reply += "\n\n**Sources:**\n"
+                        for s in set(sources):
+                            reply += f"- {s}\n"
+                    
+                    break # Success! Break out of the fallback loop.
+                    
+                elif ai_res.status_code == 503:
+                    print(f"{model_name} is overloaded. Trying next model...")
+                    continue # Try the next model in the list
+                else:
+                    reply = f"Gemini Error ({model_name}): {ai_res.status_code} - {ai_res.text}"
+                    break # Non-503 error, stop trying
+                    
+        except Exception as e:
+            reply = f"Connection Error: {str(e)}"
+            break
 
     return {
         "success": True,
