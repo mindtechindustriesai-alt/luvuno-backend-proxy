@@ -5,7 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Optional
 
-app = FastAPI(title="MindTech Intelligence Gateway", version="1.4")
+app = FastAPI(title="MindTech Intelligence Gateway", version="1.5")
 
 app.add_middleware(
     CORSMiddleware,
@@ -56,43 +56,54 @@ async def chat_gateway(req: ChatRequest):
         except Exception as e:
             print(f"Tavily error: {e}")
 
-    # 2. Build the message array
-    messages = []
-    
-    for msg in req.history[-5:]:
-        role = "user" if msg.role == "user" else "model"
-        messages.append({"role": role, "parts": [{"text": msg.content}]})
-        
+    # 2. Build the input string (Interactions API uses a single input or list of contents)
     final_user_content = req.prompt
     if live_context:
         final_user_content = f"{live_context}\n\nQuestion: {req.prompt}\n(Use the CURRENT INFO above to answer accurately)."
-    
-    messages.append({"role": "user", "parts": [{"text": final_user_content}]})
 
-    # 3. Call Gemini 3.8 Flash
+    # 3. Call Gemini 3.8 Flash using the new Interactions API
     if not GEMINI_API_KEY:
         return {"success": False, "reply": "Gemini API key is missing in Render Environment."}
 
     try:
-        # Changed to gemini-3.8-flash based on Google's error message
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent?key={GEMINI_API_KEY}"
+        # NEW ENDPOINT: /v1beta/interactions
+        url = "https://generativelanguage.googleapis.com/v1beta/interactions"
         
+        headers = {
+            "x-goog-api-key": GEMINI_API_KEY,
+            "Content-Type": "application/json"
+        }
+        
+        # Build the input. We can pass system instruction via a separate field or prepend.
+        # The new API expects a simple "input" string for basic usage.
         payload = {
-            "systemInstruction": {
+            "model": "gemini-3.8-flash",
+            "input": final_user_content,
+            "system_instruction": {
                 "parts": [{"text": req.system_prompt}]
-            },
-            "contents": messages,
-            "generationConfig": {
-                "temperature": 0.7
             }
         }
 
         async with httpx.AsyncClient() as client:
-            ai_res = await client.post(url, json=payload, timeout=30.0)
+            ai_res = await client.post(url, headers=headers, json=payload, timeout=30.0)
             
             if ai_res.status_code == 200:
                 ai_data = ai_res.json()
-                reply = ai_data["candidates"][0]["content"]["parts"][0]["text"]
+                # The new API returns the text in a slightly different structure
+                # We look for the output text in the 'steps' or 'output_text'
+                reply = ""
+                if "output_text" in ai_data:
+                    reply = ai_data["output_text"]
+                elif "steps" in ai_data:
+                    # Fallback to parsing steps
+                    for step in ai_data["steps"]:
+                        if step.get("type") == "model_output":
+                            for content in step.get("content", []):
+                                if content.get("type") == "text":
+                                    reply += content.get("text", "")
+                
+                if not reply:
+                    reply = "No text output found in Gemini response."
                 
                 if sources:
                     reply += "\n\n**Sources:**\n"
