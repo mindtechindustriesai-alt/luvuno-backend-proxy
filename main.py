@@ -119,4 +119,4 @@ async def khensani_chat(request: Request):
             "engine": "Khensani-MQOS-Python-v6.1",
             "intel_boost": "active" if live_context else "inactive"
         }
-    }
+    } 
