@@ -5,7 +5,7 @@ import os
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 
-app = FastAPI(title="Luvuno Backend Proxy", version="6.2")
+app = FastAPI(title="Luvuno Backend Proxy", version="6.4")
 
 app.add_middleware(
     CORSMiddleware,
@@ -17,18 +17,13 @@ app.add_middleware(
 
 @app.get("/")
 async def root():
-    return {
-        "status": "online", 
-        "engine": "Luvuno-MQOS-Proxy", 
-        "intel_layer": "tavily_active" if os.environ.get("TAVILY_API_KEY") else "inactive"
-    }
+    return {"status": "online", "engine": "Luvuno-MQOS-Proxy", "intel_layer": "tavily_active" if os.environ.get("TAVILY_API_KEY") else "inactive"}
 
-async def fetch_live_context(prompt: str) -> str:
-    """Fetches real-time web search results from Tavily."""
+async def fetch_live_answer(prompt: str) -> str:
+    """Fetches a SHORT, direct answer from Tavily."""
     tavily_key = os.environ.get("TAVILY_API_KEY")
     if not tavily_key:
         return ""
-
     try:
         async with httpx.AsyncClient() as client:
             res = await client.post(
@@ -37,21 +32,16 @@ async def fetch_live_context(prompt: str) -> str:
                     "api_key": tavily_key,
                     "query": prompt,
                     "search_depth": "basic",
-                    "include_answer": False,
-                    "max_results": 3
+                    "include_answer": True,
+                    "max_results": 1
                 },
                 timeout=6.0
             )
             if res.status_code != 200:
                 return ""
-                
             data = res.json()
-            context = "LIVE WEB CONTEXT (Use this to answer accurately):\n"
-            for result in data.get("results", []):
-                context += f"- [{result.get('title', 'Source')}]: {result.get('content', '')}\n"
-            return context
-    except Exception as e:
-        print(f"[Intel] Tavily search failed: {e}")
+            return data.get("answer", "")
+    except Exception:
         return ""
 
 @app.post("/api/v1/khensani/chat")
@@ -65,29 +55,26 @@ async def khensani_chat(request: Request):
     if not prompt:
         return {"success": False, "reply": "No prompt provided."}
 
-    # 1. Fetch Live Intel
-    live_context = await fetch_live_context(prompt)
+    # 1. Fetch the short Tavily answer
+    live_answer = await fetch_live_answer(prompt)
 
-    # 2. Build System Prompt
-    system_prompt = (
-        "You are Khensani AI, an advanced educational intelligence powered by MindTech Industries. "
-        "Answer the student's inquiry immediately, thoroughly, and comprehensively with full academic depth. "
-        "Do NOT ask stalling follow-up questions. Provide structured Markdown answers.\n\n"
-    )
-    
-    if live_context:
-        system_prompt += f"{live_context}\n\n"
+    # 2. Build the ULTIMATE force-feed message
+    if live_answer:
+        # We put the context in the USER message, no system prompt at all.
+        final_message = f"Current information: {live_answer}\n\nQuestion: {prompt}\n\nAnswer the question using the current information above. Be direct."
+    else:
+        final_message = prompt
 
-    # 3. Call Pollinations via POST with 'searchgpt'
+    # 3. Call Pollinations with searchgpt
     try:
         async with httpx.AsyncClient() as client:
             res = await client.post(
                 "https://text.pollinations.ai/openai",
                 json={
-                    "model": "searchgpt", # Switched to searchgpt for live web grounding
+                    "model": "searchgpt", # searchgpt handles web context better
                     "messages": [
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": prompt}
+                        # We completely removed the system prompt to avoid the silent drop bug
+                        {"role": "user", "content": final_message}
                     ],
                     "temperature": 0.7
                 },
@@ -101,8 +88,7 @@ async def khensani_chat(request: Request):
                 reply = f"System error: {res.status_code}"
                 
     except Exception as e:
-        print(f"[LLM] Pollinations error: {e}")
-        reply = "I am online. However, I am having trouble connecting to the brain right now."
+        reply = f"I am online but encountered an error: {str(e)}"
 
     # 4. Generate Quantum Receipt
     rand_hash = ''.join(random.choices(string.ascii_uppercase + string.digits, k=10))
@@ -115,8 +101,8 @@ async def khensani_chat(request: Request):
             "chsh_s": 2.8284,
             "provenance_stamp": verification_stamp,
             "patent": "SA 2026/05142",
-            "engine": "Khensani-MQOS-Python-v6.2",
-            "intel_boost": "active" if live_context else "inactive",
+            "engine": "Khensani-MQOS-Python-v6.4",
+            "intel_boost": "active" if live_answer else "inactive",
             "model": "searchgpt"
         }
     }
