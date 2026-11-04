@@ -5,7 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Optional
 
-app = FastAPI(title="MindTech Intelligence Gateway", version="1.1")
+app = FastAPI(title="MindTech Intelligence Gateway", version="1.3")
 
 app.add_middleware(
     CORSMiddleware,
@@ -16,7 +16,7 @@ app.add_middleware(
 )
 
 TAVILY_API_KEY = os.environ.get("TAVILY_API_KEY")
-DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY")
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
 class ChatMessage(BaseModel):
     role: str
@@ -57,47 +57,49 @@ async def chat_gateway(req: ChatRequest):
             print(f"Tavily error: {e}")
 
     # 2. Build the message array
-    messages = [{"role": "system", "content": req.system_prompt}]
+    messages = []
     
     for msg in req.history[-5:]:
-        messages.append({"role": msg.role, "content": msg.content})
+        role = "user" if msg.role == "user" else "model"
+        messages.append({"role": role, "parts": [{"text": msg.content}]})
         
     final_user_content = req.prompt
     if live_context:
         final_user_content = f"{live_context}\n\nQuestion: {req.prompt}\n(Use the CURRENT INFO above to answer accurately)."
     
-    messages.append({"role": "user", "content": final_user_content})
+    messages.append({"role": "user", "parts": [{"text": final_user_content}]})
 
-    # 3. Call DeepSeek (Using your existing API key in Render)
-    if not DEEPSEEK_API_KEY:
-        return {"success": False, "reply": "DeepSeek API key is missing in Render Environment."}
+    # 3. Call Gemini 2.5 Flash
+    if not GEMINI_API_KEY:
+        return {"success": False, "reply": "Gemini API key is missing in Render Environment."}
 
     try:
+        # Changed to gemini-2.5-flash
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
+        
+        payload = {
+            "systemInstruction": {
+                "parts": [{"text": req.system_prompt}]
+            },
+            "contents": messages,
+            "generationConfig": {
+                "temperature": 0.7
+            }
+        }
+
         async with httpx.AsyncClient() as client:
-            ai_res = await client.post(
-                "https://api.deepseek.com/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
-                    "Content-Type": "application/json"
-                },
-                json={
-                    "model": "deepseek-chat",
-                    "messages": messages,
-                    "temperature": 0.7
-                },
-                timeout=30.0
-            )
+            ai_res = await client.post(url, json=payload, timeout=30.0)
             
             if ai_res.status_code == 200:
                 ai_data = ai_res.json()
-                reply = ai_data["choices"][0]["message"]["content"]
+                reply = ai_data["candidates"][0]["content"]["parts"][0]["text"]
                 
                 if sources:
                     reply += "\n\n**Sources:**\n"
                     for s in set(sources):
                         reply += f"- {s}\n"
             else:
-                reply = f"DeepSeek Error: {ai_res.status_code} - {ai_res.text}"
+                reply = f"Gemini Error: {ai_res.status_code} - {ai_res.text}"
                 
     except Exception as e:
         reply = f"I am currently offline. Error: {str(e)}"
