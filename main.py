@@ -5,7 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Optional
 
-app = FastAPI(title="MindTech Intelligence Gateway", version="1.3")
+app = FastAPI(title="MindTech Intelligence Gateway", version="1.4")
 
 app.add_middleware(
     CORSMiddleware,
@@ -69,13 +69,13 @@ async def chat_gateway(req: ChatRequest):
     
     messages.append({"role": "user", "parts": [{"text": final_user_content}]})
 
-    # 3. Call Gemini 2.5 Flash
+    # 3. Call Gemini 3.8 Flash
     if not GEMINI_API_KEY:
         return {"success": False, "reply": "Gemini API key is missing in Render Environment."}
 
     try:
-        # Changed to gemini-2.5-flash
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
+        # Changed to gemini-3.8-flash based on Google's error message
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent?key={GEMINI_API_KEY}"
         
         payload = {
             "systemInstruction": {
