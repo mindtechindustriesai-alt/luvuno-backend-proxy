@@ -5,7 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Optional
 
-app = FastAPI(title="MindTech Intelligence Gateway", version="1.5")
+app = FastAPI(title="MindTech Intelligence Gateway", version="1.6")
 
 app.add_middleware(
     CORSMiddleware,
@@ -56,7 +56,7 @@ async def chat_gateway(req: ChatRequest):
         except Exception as e:
             print(f"Tavily error: {e}")
 
-    # 2. Build the input string (Interactions API uses a single input or list of contents)
+    # 2. Build the input string
     final_user_content = req.prompt
     if live_context:
         final_user_content = f"{live_context}\n\nQuestion: {req.prompt}\n(Use the CURRENT INFO above to answer accurately)."
@@ -66,7 +66,6 @@ async def chat_gateway(req: ChatRequest):
         return {"success": False, "reply": "Gemini API key is missing in Render Environment."}
 
     try:
-        # NEW ENDPOINT: /v1beta/interactions
         url = "https://generativelanguage.googleapis.com/v1beta/interactions"
         
         headers = {
@@ -74,14 +73,11 @@ async def chat_gateway(req: ChatRequest):
             "Content-Type": "application/json"
         }
         
-        # Build the input. We can pass system instruction via a separate field or prepend.
-        # The new API expects a simple "input" string for basic usage.
+        # FIXED: system_instruction must be a plain string, not a dict
         payload = {
             "model": "gemini-3.8-flash",
             "input": final_user_content,
-            "system_instruction": {
-                "parts": [{"text": req.system_prompt}]
-            }
+            "system_instruction": req.system_prompt
         }
 
         async with httpx.AsyncClient() as client:
@@ -89,13 +85,13 @@ async def chat_gateway(req: ChatRequest):
             
             if ai_res.status_code == 200:
                 ai_data = ai_res.json()
-                # The new API returns the text in a slightly different structure
-                # We look for the output text in the 'steps' or 'output_text'
                 reply = ""
+                
+                # The Interactions API returns output_text directly
                 if "output_text" in ai_data:
                     reply = ai_data["output_text"]
+                # Fallback: Parse the steps array
                 elif "steps" in ai_data:
-                    # Fallback to parsing steps
                     for step in ai_data["steps"]:
                         if step.get("type") == "model_output":
                             for content in step.get("content", []):
@@ -103,7 +99,7 @@ async def chat_gateway(req: ChatRequest):
                                     reply += content.get("text", "")
                 
                 if not reply:
-                    reply = "No text output found in Gemini response."
+                    reply = f"No text output found in Gemini response. Raw: {str(ai_data)[:200]}"
                 
                 if sources:
                     reply += "\n\n**Sources:**\n"
