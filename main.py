@@ -1,21 +1,22 @@
 import os
 import httpx
-from fastapi import FastAPI, Request
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Optional
 
-app = FastAPI(title="MindTech Intelligence Gateway", version="1.0")
+app = FastAPI(title="MindTech Intelligence Gateway", version="1.1")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], # Lock this down to your domains later
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 TAVILY_API_KEY = os.environ.get("TAVILY_API_KEY")
+DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY")
 
 class ChatMessage(BaseModel):
     role: str
@@ -31,7 +32,7 @@ async def chat_gateway(req: ChatRequest):
     live_context = ""
     sources = []
 
-    # 1. Fetch Live Web Intel securely
+    # 1. Fetch Live Web Intel securely via Tavily
     if TAVILY_API_KEY:
         try:
             async with httpx.AsyncClient() as client:
@@ -55,27 +56,32 @@ async def chat_gateway(req: ChatRequest):
         except Exception as e:
             print(f"Tavily error: {e}")
 
-    # 2. Build the message array for the AI
+    # 2. Build the message array
     messages = [{"role": "system", "content": req.system_prompt}]
     
-    # Add history (last 5 messages for continuity)
     for msg in req.history[-5:]:
         messages.append({"role": msg.role, "content": msg.content})
         
-    # Add the current prompt with live context injected
     final_user_content = req.prompt
     if live_context:
         final_user_content = f"{live_context}\n\nQuestion: {req.prompt}\n(Use the CURRENT INFO above to answer accurately)."
     
     messages.append({"role": "user", "content": final_user_content})
 
-    # 3. Call the AI (Pollinations OpenAI-compatible endpoint)
+    # 3. Call DeepSeek (Using your existing API key in Render)
+    if not DEEPSEEK_API_KEY:
+        return {"success": False, "reply": "DeepSeek API key is missing in Render Environment."}
+
     try:
         async with httpx.AsyncClient() as client:
             ai_res = await client.post(
-                "https://gen.pollinations.ai/v1/chat/completions",
+                "https://api.deepseek.com/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
+                    "Content-Type": "application/json"
+                },
                 json={
-                    "model": "openai",
+                    "model": "deepseek-chat",
                     "messages": messages,
                     "temperature": 0.7
                 },
@@ -86,17 +92,15 @@ async def chat_gateway(req: ChatRequest):
                 ai_data = ai_res.json()
                 reply = ai_data["choices"][0]["message"]["content"]
                 
-                # Append sources if they exist
                 if sources:
                     reply += "\n\n**Sources:**\n"
                     for s in set(sources):
                         reply += f"- {s}\n"
             else:
-                reply = "I am having trouble connecting to my reasoning engine right now."
+                reply = f"DeepSeek Error: {ai_res.status_code} - {ai_res.text}"
                 
     except Exception as e:
-        print(f"AI error: {e}")
-        reply = "I am currently offline. Please try again later."
+        reply = f"I am currently offline. Error: {str(e)}"
 
     return {
         "success": True,
