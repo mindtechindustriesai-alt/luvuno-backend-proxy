@@ -5,7 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Optional
 
-app = FastAPI(title="MindTech Intelligence Router", version="5.0")
+app = FastAPI(title="MindTech Intelligence Router", version="6.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -32,7 +32,7 @@ async def chat_gateway(req: ChatRequest):
     live_context = ""
     sources = []
 
-    # 1. Fetch Live Web Intel securely via Tavily
+    # 1. Fetch DEEP Live Web Intel
     if TAVILY_API_KEY:
         try:
             async with httpx.AsyncClient() as client:
@@ -41,27 +41,35 @@ async def chat_gateway(req: ChatRequest):
                     json={
                         "api_key": TAVILY_API_KEY,
                         "query": req.prompt,
-                        "search_depth": "basic",
+                        "search_depth": "advanced",  # UPGRADED: Pulls full page text
                         "include_answer": True,
-                        "max_results": 3
+                        "max_results": 5               # UPGRADED: More sources
                     },
-                    timeout=10.0
+                    timeout=15.0
                 )
                 if tavily_res.status_code == 200:
                     data = tavily_res.json()
                     if data.get("answer"):
                         live_context = f"\n[CURRENT INFO]: {data['answer']}\n"
                     for r in data.get("results", []):
+                        # We now include the full content snippet from the page
+                        live_context += f"\n[SOURCE: {r.get('url')}]\n{r.get('content')}\n"
                         sources.append(r.get("url"))
         except Exception as e:
             print(f"Tavily error: {e}")
 
     final_user_content = req.prompt
     if live_context:
-        final_user_content = f"{live_context}\n\nQuestion: {req.prompt}\n(Use the CURRENT INFO above to answer accurately)."
+        # UPGRADED PROMPT: Forces the AI to use the deep context
+        final_user_content = (
+            f"{live_context}\n\n"
+            f"Based on the extensive sources above, answer the following request thoroughly. "
+            f"If an essay is requested, write a full, multi-paragraph essay. Be comprehensive.\n\n"
+            f"Request: {req.prompt}"
+        )
 
     if not GEMINI_API_KEY:
-        return {"success": False, "reply": "Gemini API key is missing in Render Environment."}
+        return {"success": False, "reply": "Gemini API key is missing."}
 
     url = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
     headers = {
@@ -69,14 +77,11 @@ async def chat_gateway(req: ChatRequest):
         "Content-Type": "application/json"
     }
 
-    # The exact models you verified:
-    # 1. 3.5 Flash-Lite (Fast, High-volume, Stable)
-    # 2. 3.8 Flash (Smarter, for complex workflows)
+    # 3.5 for speed, 3.8 for deep reasoning (like essays)
     models_to_try = ["gemini-3.5-flash-lite", "gemini-3.8-flash"]
     errors_log = []
 
     for model_name in models_to_try:
-        # Build the standard Gemini API payload
         contents = []
         for msg in req.history[-6:]:
             contents.append({
@@ -84,22 +89,19 @@ async def chat_gateway(req: ChatRequest):
                 "parts": [{"text": msg.content}]
             })
         
-        contents.append({
-            "role": "user",
-            "parts": [{"text": final_user_content}]
-        })
+        contents.append({"role": "user", "parts": [{"text": final_user_content}]})
 
+        # UPGRADED: Slightly higher temperature for more expressive writing
         payload = {
             "systemInstruction": {"parts": [{"text": req.system_prompt}]},
             "contents": contents,
-            "generationConfig": {"temperature": 0.7}
+            "generationConfig": {"temperature": 0.8, "maxOutputTokens": 2048}
         }
 
         try:
             async with httpx.AsyncClient() as client:
-                # 15 second timeout ensures it fails fast so the fallback can kick in
                 formatted_url = url.format(model=model_name)
-                ai_res = await client.post(formatted_url, headers=headers, json=payload, timeout=15.0)
+                ai_res = await client.post(formatted_url, headers=headers, json=payload, timeout=45.0)
                 
                 if ai_res.status_code == 200:
                     ai_data = ai_res.json()
@@ -119,28 +121,21 @@ async def chat_gateway(req: ChatRequest):
                     }
                     
                 elif ai_res.status_code == 503:
-                    print(f"[{model_name}] is overloaded (503). Trying next model...")
-                    errors_log.append(f"{model_name}: 503 Overloaded")
+                    errors_log.append(f"{model_name}: 503")
                     continue 
                 else:
-                    print(f"[{model_name}] failed with {ai_res.status_code}: {ai_res.text}")
-                    errors_log.append(f"{model_name}: {ai_res.status_code} - {ai_res.text[:50]}")
-                    break # If it's a 400/401 error, fail immediately, don't try next
+                    errors_log.append(f"{model_name}: {ai_res.status_code}")
+                    break 
                     
         except httpx.ReadTimeout:
-            print(f"[{model_name}] timed out after 15s. Trying next model...")
             errors_log.append(f"{model_name}: Timeout")
             continue
         except Exception as e:
-            print(f"[{model_name}] connection error: {str(e)}")
             errors_log.append(f"{model_name}: {str(e)}")
             break
 
-    # If we get here, all models failed
     return {
         "success": False,
-        "reply": f"I tried multiple AI engines but they are all currently unavailable. (Errors: {' | '.join(errors_log)})",
+        "reply": f"All AI engines are currently unavailable. (Errors: {' | '.join(errors_log)})",
         "provider": "None",
-        "has_live_context": bool(live_context),
-        "sources": list(set(sources))
     }
